@@ -1,50 +1,58 @@
 {
-  "watchlist": ["BTCUSDT"],
-  "default_timeframe": "1m",
+  "watchlist": ["BTC-USD", "XRP-USD"],
+  "default_timeframe": "4H",
 
   "strategy": {
-    "name": "VWAP + RSI(3) + EMA(8) Scalping Strategy",
-    "sources": ["Lewis Jackson"],
-    "description": "Three indicators, each doing a different job. EMA(8) for trend direction, VWAP for session bias, RSI(3) for entry timing. All three must align before a trade fires."
+    "name": "CoinsKid RSI 4H Trigger Strategy",
+    "sources": ["CoinsKid (@CoinsKid, 271K subscribers) — synthesised from 40 videos Sep 2025–Jun 2026"],
+    "description": "Setup A from CoinsKid's playbook: RSI(14) on the 4H chart hitting 13.5 is a high-probability bounce signal. Confirmed repeatedly across XRP and BTC. Macro regime check (20-week EMA) filters out buying in structural downtrends. Long-only — spot trading on Coinbase Advanced."
   },
 
   "indicators": {
-    "ema_8": "Trend direction. Price above EMA(8) = bullish momentum. Below = bearish.",
-    "vwap": "Session bias. Price above VWAP = buyers in control. Below = sellers. Resets at midnight UTC.",
-    "rsi_3": "Entry timing. RSI on 3 candles only — extremely sensitive. Below 30 in an uptrend = snap-back setup. Above 70 in a downtrend = reversal likely."
+    "rsi_14": "Primary trigger. RSI(14) on 4H ≤ 13.5 = high-probability bounce setup. CoinsKid: 'Drop an alert at 13.5 on the RSI on the 4-hourly time frame. You see it come down to that, you buy.'",
+    "ema_20w": "Macro regime filter. 20-week EMA (~840 four-hour candles). Above = bull market mode, all setups active. Below = caution, short-term scalps only.",
+    "vwap": "Session bias reference. Informational — used for context, not a hard block."
   },
 
   "bias_criteria": {
-    "bullish": ["Price is above VWAP", "Price is above EMA(8)"],
-    "bearish": ["Price is below VWAP", "Price is below EMA(8)"]
+    "bullish": [
+      "RSI(14) on 4H has dropped to or below 13.5",
+      "Price is not more than 30% below the 20-week EMA (no extreme crash)"
+    ],
+    "note": "Long-only strategy — spot trading on Coinbase Advanced. No short positions."
   },
 
   "entry_rules": {
     "long": [
-      "Price is above VWAP — buyers in control for the session",
-      "Price is above EMA(8) — uptrend confirmed",
-      "RSI(3) has dropped below 30 — short-term pullback in an uptrend, snap-back likely"
-    ],
-    "short": [
-      "Price is below VWAP — sellers in control",
-      "Price is below EMA(8) — downtrend confirmed",
-      "RSI(3) has spiked above 70 — overbought in a downtrend, reversal likely"
+      "RSI(14) on 4H ≤ 13.5 — CoinsKid's primary bounce trigger",
+      "Price is within 30% of the 20-week EMA — macro regime is not in structural collapse",
+      "Spot only — no leverage, no margin"
     ]
   },
 
   "exit_rules": [
-    "Exit when RSI(3) crosses back above 50 (for longs) or below 50 (for shorts)",
-    "Hard stop: 0.3% below entry for longs, 0.3% above entry for shorts",
-    "Take profit at next VWAP touch or EMA(8) cross"
+    "Target: daily ribbon (daily EMA cluster) — first take-profit zone per CoinsKid",
+    "Hard stop: below the most recent swing low on the 4H chart",
+    "Minimum risk:reward 1:2 before entering",
+    "If RSI(14) crosses back above 50, begin scaling out"
   ],
 
   "risk_rules": [
-    "Risk maximum 1% of portfolio per trade",
+    "Risk maximum 1-2% of portfolio per trade",
     "Maximum trade size capped by MAX_TRADE_SIZE_USD in .env",
     "Maximum trades per day capped by MAX_TRADES_PER_DAY in .env",
-    "Do not trade if price is more than 1.5% away from VWAP — overextended",
-    "Paper trade first — validate this strategy on your specific asset before going live"
+    "Always check BTC health (20-week EMA position) before any trade",
+    "Never buy a coin showing in the Macro Index sell zone on coinskid.com",
+    "If bottom checklist (coinskid.com) shows 0-2 triggers: sidelines or extreme caution",
+    "If bottom checklist shows 5+ triggers: high-conviction, normal size"
   ],
 
-  "notes": "Scalping strategy — designed for 1m to 5m timeframes. RSI(3) is intentionally fast and sensitive. Do not apply to higher timeframes."
+  "macro_pre_checks": [
+    "Bitcoin above or below 20-week EMA? Above = bull mode (all setups). Below = scalps only.",
+    "Tether Dominance (USDT.D on TradingView): rising = money leaving crypto (caution); falling = money entering (look for longs)",
+    "Market breadth green? Green = altcoin longs viable. Red = BTC only.",
+    "Check coinskid.com BMS Index: coins 30%+ above BMS = short candidates; 60%+ below = buy candidates"
+  ],
+
+  "notes": "Primary setup is CoinsKid's Setup A: RSI(14) 4H trigger at 13.5. Most reliable and highest frequency setup from his 40-video transcript analysis. Target is always the daily ribbon. Stop always below the swing low. CoinsKid uses this on XRP and BTC specifically. Custom platform signals (coinskid.com BMS Index, Futures Blocks, Crypto Radar, Liquidity Dance) cannot be automated — use them manually for pre-session context before trusting the bot's output."
 }

@@ -17,7 +17,7 @@ import { execSync } from "child_process";
 // ─── Onboarding ───────────────────────────────────────────────────────────────
 
 function checkOnboarding() {
-  const required = ["BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE"];
+  const required = ["COINBASE_API_KEY", "COINBASE_API_SECRET"];
   const missing = required.filter((k) => !process.env[k]);
 
   if (!existsSync(".env")) {
@@ -27,17 +27,16 @@ function checkOnboarding() {
     writeFileSync(
       ".env",
       [
-        "# BitGet credentials",
-        "BITGET_API_KEY=",
-        "BITGET_SECRET_KEY=",
-        "BITGET_PASSPHRASE=",
+        "# Coinbase Advanced credentials",
+        "COINBASE_API_KEY=",
+        "COINBASE_API_SECRET=",
         "",
         "# Trading config",
         "PORTFOLIO_VALUE_USD=1000",
         "MAX_TRADE_SIZE_USD=100",
         "MAX_TRADES_PER_DAY=3",
         "PAPER_TRADING=true",
-        "SYMBOL=BTCUSDT",
+        "SYMBOL=BTC-USD",
         "TIMEFRAME=4H",
       ].join("\n") + "\n",
     );
@@ -45,7 +44,7 @@ function checkOnboarding() {
       execSync("open .env");
     } catch {}
     console.log(
-      "Fill in your BitGet credentials in .env then re-run: node bot.js\n",
+      "Fill in your Coinbase credentials in .env then re-run: node bot.js\n",
     );
     process.exit(0);
   }
@@ -72,18 +71,16 @@ function checkOnboarding() {
 // ─── Config ────────────────────────────────────────────────────────────────
 
 const CONFIG = {
-  symbol: process.env.SYMBOL || "BTCUSDT",
+  symbol: process.env.SYMBOL || "BTC-USD",
   timeframe: process.env.TIMEFRAME || "4H",
   portfolioValue: parseFloat(process.env.PORTFOLIO_VALUE_USD || "1000"),
   maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD || "100"),
   maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "3"),
   paperTrading: process.env.PAPER_TRADING !== "false",
-  tradeMode: process.env.TRADE_MODE || "spot",
-  bitget: {
-    apiKey: process.env.BITGET_API_KEY,
-    secretKey: process.env.BITGET_SECRET_KEY,
-    passphrase: process.env.BITGET_PASSPHRASE,
-    baseUrl: process.env.BITGET_BASE_URL || "https://api.bitget.com",
+  coinbase: {
+    apiKey: process.env.COINBASE_API_KEY,
+    apiSecret: process.env.COINBASE_API_SECRET,
+    baseUrl: "https://api.coinbase.com",
   },
 };
 
@@ -109,24 +106,23 @@ function countTodaysTrades(log) {
 
 // ─── Market Data (Binance public API — free, no auth) ───────────────────────
 
+// Convert Coinbase symbol (BTC-USD) to Binance format (BTCUSDT) for market data
+function toBinanceSymbol(symbol) {
+  return symbol.replace("-USD", "USDT").replace("-", "");
+}
+
 async function fetchCandles(symbol, interval, limit = 100) {
-  // Map our timeframe format to Binance interval format
   const intervalMap = {
-    "1m": "1m",
-    "3m": "3m",
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1H": "1h",
-    "4H": "4h",
-    "1D": "1d",
-    "1W": "1w",
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1H": "1h", "4H": "4h", "1D": "1d", "1W": "1w",
   };
   const binanceInterval = intervalMap[interval] || "1m";
+  const binanceSymbol = toBinanceSymbol(symbol);
 
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${binanceInterval}&limit=${limit}`;
+  // Use Binance.US — accessible from the US (binance.com is geo-blocked)
+  const url = `https://api.binance.us/api/v3/klines?symbol=${binanceSymbol}&interval=${binanceInterval}&limit=${limit}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
+  if (!res.ok) throw new Error(`Binance US API error: ${res.status}`);
   const data = await res.json();
 
   return data.map((k) => ({
@@ -166,6 +162,12 @@ function calcRSI(closes, period = 14) {
   return 100 - 100 / (1 + rs);
 }
 
+function calcMACD(closes) {
+  const ema12 = calcEMA(closes, 12);
+  const ema26 = calcEMA(closes, 26);
+  return ema12 - ema26;
+}
+
 // VWAP — session-based, resets at midnight UTC
 function calcVWAP(candles) {
   const midnightUTC = new Date();
@@ -180,9 +182,9 @@ function calcVWAP(candles) {
   return cumVol === 0 ? null : cumTPV / cumVol;
 }
 
-// ─── Safety Check ───────────────────────────────────────────────────────────
+// ─── Safety Check (CoinsKid Setup A — RSI 4H Trigger) ───────────────────────
 
-function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
+function runSafetyCheck(price, ema20w, vwap, rsi14, macd, rules) {
   const results = [];
 
   const check = (label, required, actual, pass) => {
@@ -192,87 +194,29 @@ function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
     console.log(`     Required: ${required} | Actual: ${actual}`);
   };
 
-  console.log("\n── Safety Check ─────────────────────────────────────────\n");
+  console.log("\n── Safety Check (CoinsKid Setup A) ─────────────────────\n");
 
-  // Determine bias first
-  const bullishBias = price > vwap && price > ema8;
-  const bearishBias = price < vwap && price < ema8;
+  const macroMode = price >= ema20w ? "BULL MARKET" : "BEAR MARKET (caution)";
+  console.log(`  Macro regime: ${macroMode}`);
+  console.log(`  VWAP: $${vwap ? vwap.toFixed(2) : "N/A"} (reference only)`);
+  console.log(`  MACD: ${macd.toFixed(2)} (${macd > 0 ? "above zero line" : "below zero line"})\n`);
 
-  if (bullishBias) {
-    console.log("  Bias: BULLISH — checking long entry conditions\n");
+  // 1. Primary trigger — CoinsKid's core signal
+  check(
+    "RSI(14) 4H trigger (CoinsKid bounce signal)",
+    "≤ 13.5",
+    rsi14.toFixed(2),
+    rsi14 <= 13.5,
+  );
 
-    // 1. Price above VWAP
-    check(
-      "Price above VWAP (buyers in control)",
-      `> ${vwap.toFixed(2)}`,
-      price.toFixed(2),
-      price > vwap,
-    );
-
-    // 2. Price above EMA(8)
-    check(
-      "Price above EMA(8) (uptrend confirmed)",
-      `> ${ema8.toFixed(2)}`,
-      price.toFixed(2),
-      price > ema8,
-    );
-
-    // 3. RSI(3) pullback
-    check(
-      "RSI(3) below 30 (snap-back setup in uptrend)",
-      "< 30",
-      rsi3.toFixed(2),
-      rsi3 < 30,
-    );
-
-    // 4. Not overextended from VWAP
-    const distFromVWAP = Math.abs((price - vwap) / vwap) * 100;
-    check(
-      "Price within 1.5% of VWAP (not overextended)",
-      "< 1.5%",
-      `${distFromVWAP.toFixed(2)}%`,
-      distFromVWAP < 1.5,
-    );
-  } else if (bearishBias) {
-    console.log("  Bias: BEARISH — checking short entry conditions\n");
-
-    check(
-      "Price below VWAP (sellers in control)",
-      `< ${vwap.toFixed(2)}`,
-      price.toFixed(2),
-      price < vwap,
-    );
-
-    check(
-      "Price below EMA(8) (downtrend confirmed)",
-      `< ${ema8.toFixed(2)}`,
-      price.toFixed(2),
-      price < ema8,
-    );
-
-    check(
-      "RSI(3) above 70 (reversal setup in downtrend)",
-      "> 70",
-      rsi3.toFixed(2),
-      rsi3 > 70,
-    );
-
-    const distFromVWAP = Math.abs((price - vwap) / vwap) * 100;
-    check(
-      "Price within 1.5% of VWAP (not overextended)",
-      "< 1.5%",
-      `${distFromVWAP.toFixed(2)}%`,
-      distFromVWAP < 1.5,
-    );
-  } else {
-    console.log("  Bias: NEUTRAL — no clear direction. No trade.\n");
-    results.push({
-      label: "Market bias",
-      required: "Bullish or bearish",
-      actual: "Neutral",
-      pass: false,
-    });
-  }
+  // 2. Macro regime filter — don't buy in a structural collapse
+  const distFromEMA = ((price - ema20w) / ema20w) * 100;
+  check(
+    "Price within 30% of 20-week EMA (no structural collapse)",
+    "within -30% of EMA",
+    `${distFromEMA.toFixed(2)}% from 20w EMA ($${ema20w.toFixed(2)})`,
+    distFromEMA > -30,
+  );
 
   const allPass = results.every((r) => r.pass);
   return { results, allPass };
@@ -315,56 +259,77 @@ function checkTradeLimits(log) {
   return true;
 }
 
-// ─── BitGet Execution ────────────────────────────────────────────────────────
+// ─── Coinbase Advanced Execution ─────────────────────────────────────────────
 
-function signBitGet(timestamp, method, path, body = "") {
-  const message = `${timestamp}${method}${path}${body}`;
-  return crypto
-    .createHmac("sha256", CONFIG.bitget.secretKey)
-    .update(message)
-    .digest("base64");
+function normalizePemKey(raw) {
+  // Replace literal \n escape sequences (from .env) with real newlines
+  const expanded = raw.replace(/\\n/g, "\n");
+  // Extract only the base64 body lines (strips any partial/missing headers)
+  const body = expanded
+    .split("\n")
+    .filter((l) => !l.startsWith("-----") && l.trim() !== "")
+    .join("\n");
+  return `-----BEGIN EC PRIVATE KEY-----\n${body}\n-----END EC PRIVATE KEY-----`;
 }
 
-async function placeBitGetOrder(symbol, side, sizeUSD, price) {
-  const quantity = (sizeUSD / price).toFixed(6);
-  const timestamp = Date.now().toString();
-  const path =
-    CONFIG.tradeMode === "spot"
-      ? "/api/v2/spot/trade/placeOrder"
-      : "/api/v2/mix/order/placeOrder";
+function generateCoinbaseJWT() {
+  const header = { alg: "ES256", kid: CONFIG.coinbase.apiKey };
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    sub: CONFIG.coinbase.apiKey,
+    iss: "coinbase-cloud",
+    nbf: now,
+    exp: now + 120,
+    "urn:coinbase:fc:requests:uuid": crypto.randomUUID(),
+  };
 
+  const enc = (obj) =>
+    Buffer.from(JSON.stringify(obj)).toString("base64url");
+  const signingInput = `${enc(header)}.${enc(payload)}`;
+
+  const privateKey = normalizePemKey(CONFIG.coinbase.apiSecret);
+  const sign = crypto.createSign("SHA256");
+  sign.update(signingInput);
+  // ieee-p1363 outputs raw R||S (required by JWT), not DER
+  const sig = sign.sign({ key: privateKey, dsaEncoding: "ieee-p1363" });
+
+  return `${signingInput}.${sig.toString("base64url")}`;
+}
+
+async function placeCoinbaseOrder(symbol, side, sizeUSD) {
   const body = JSON.stringify({
-    symbol,
-    side,
-    orderType: "market",
-    quantity,
-    ...(CONFIG.tradeMode === "futures" && {
-      productType: "USDT-FUTURES",
-      marginMode: "isolated",
-      marginCoin: "USDT",
-    }),
-  });
-
-  const signature = signBitGet(timestamp, "POST", path, body);
-
-  const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "ACCESS-KEY": CONFIG.bitget.apiKey,
-      "ACCESS-SIGN": signature,
-      "ACCESS-TIMESTAMP": timestamp,
-      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+    client_order_id: crypto.randomUUID(),
+    product_id: symbol, // already in BTC-USD format
+    side: side.toUpperCase(),
+    order_configuration: {
+      market_market_ioc: {
+        // quote_size = USD amount for BUY; base_size = coin amount for SELL
+        ...(side.toUpperCase() === "BUY"
+          ? { quote_size: sizeUSD.toFixed(2) }
+          : { base_size: (sizeUSD / CONFIG.price).toFixed(8) }),
+      },
     },
-    body,
   });
+
+  const res = await fetch(
+    `${CONFIG.coinbase.baseUrl}/api/v3/brokerage/orders`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${generateCoinbaseJWT()}`,
+      },
+      body,
+    },
+  );
 
   const data = await res.json();
-  if (data.code !== "00000") {
-    throw new Error(`BitGet order failed: ${data.msg}`);
+  if (!data.success) {
+    const msg = data.error_response?.message || JSON.stringify(data);
+    throw new Error(`Coinbase order failed: ${msg}`);
   }
 
-  return data.data;
+  return data.success_response;
 }
 
 // ─── Tax CSV Logging ─────────────────────────────────────────────────────────
@@ -442,7 +407,7 @@ function writeTradeCsv(logEntry) {
   const row = [
     date,
     time,
-    "BitGet",
+    "Coinbase Advanced",
     logEntry.symbol,
     side,
     quantity,
@@ -517,29 +482,33 @@ async function run() {
     return;
   }
 
-  // Fetch candle data — need enough for EMA(8) + full session for VWAP
-  console.log("\n── Fetching market data from Binance ───────────────────\n");
-  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
+  // Fetch 900 candles — need 840 for accurate 20-week EMA on 4H
+  console.log("\n── Fetching market data from Binance US ────────────────\n");
+  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 900);
   const closes = candles.map((c) => c.close);
   const price = closes[closes.length - 1];
+  CONFIG.price = price; // expose for SELL size calculation
   console.log(`  Current price: $${price.toFixed(2)}`);
 
-  // Calculate indicators
-  const ema8 = calcEMA(closes, 8);
+  // CoinsKid indicators
+  const ema20w = calcEMA(closes, 840); // 20 weeks × 7 days × 6 four-hour periods
   const vwap = calcVWAP(candles);
-  const rsi3 = calcRSI(closes, 3);
+  const rsi14 = calcRSI(closes, 14);
+  const macd = calcMACD(closes);
 
-  console.log(`  EMA(8):  $${ema8.toFixed(2)}`);
-  console.log(`  VWAP:    $${vwap ? vwap.toFixed(2) : "N/A"}`);
-  console.log(`  RSI(3):  ${rsi3 ? rsi3.toFixed(2) : "N/A"}`);
+  const macroMode = price >= ema20w ? "📈 BULL" : "📉 BEAR (caution)";
+  console.log(`  20-week EMA: $${ema20w.toFixed(2)} — regime: ${macroMode}`);
+  console.log(`  RSI(14):     ${rsi14 ? rsi14.toFixed(2) : "N/A"} (trigger ≤ 13.5)`);
+  console.log(`  MACD:        ${macd.toFixed(2)}`);
+  console.log(`  VWAP:        $${vwap ? vwap.toFixed(2) : "N/A"} (reference)`);
 
-  if (!vwap || !rsi3) {
-    console.log("\n⚠️  Not enough data to calculate indicators. Exiting.");
+  if (!rsi14) {
+    console.log("\n⚠️  Not enough data to calculate RSI. Exiting.");
     return;
   }
 
   // Run safety check
-  const { results, allPass } = runSafetyCheck(price, ema8, vwap, rsi3, rules);
+  const { results, allPass } = runSafetyCheck(price, ema20w, vwap, rsi14, macd, rules);
 
   // Calculate position size
   const tradeSize = Math.min(
@@ -555,7 +524,7 @@ async function run() {
     symbol: CONFIG.symbol,
     timeframe: CONFIG.timeframe,
     price,
-    indicators: { ema8, vwap, rsi3 },
+    indicators: { ema20w, vwap, rsi14, macd },
     conditions: results,
     allPass,
     tradeSize,
@@ -589,15 +558,14 @@ async function run() {
         `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} BUY ${CONFIG.symbol}`,
       );
       try {
-        const order = await placeBitGetOrder(
+        const order = await placeCoinbaseOrder(
           CONFIG.symbol,
           "buy",
           tradeSize,
-          price,
         );
         logEntry.orderPlaced = true;
-        logEntry.orderId = order.orderId;
-        console.log(`✅ ORDER PLACED — ${order.orderId}`);
+        logEntry.orderId = order.order_id;
+        console.log(`✅ ORDER PLACED — ${order.order_id}`);
       } catch (err) {
         console.log(`❌ ORDER FAILED — ${err.message}`);
         logEntry.error = err.message;
