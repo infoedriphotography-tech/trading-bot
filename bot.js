@@ -178,7 +178,7 @@ function calcVWAP(candles) {
 
 // ─── Safety Check ───────────────────────────────────────────────────────────
 
-function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
+function runSafetyCheck(price, ema8, vwap, rsi3, prevRsi3, rules) {
   const results = [];
 
   const check = (label, required, actual, pass) => {
@@ -197,7 +197,13 @@ function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
     console.log("  Bias: BULLISH — checking long entry conditions\n");
     check("Price above VWAP (buyers in control)", `> ${vwap.toFixed(2)}`, price.toFixed(2), price > vwap);
     check("Price above EMA(8) (uptrend confirmed)", `> ${ema8.toFixed(2)}`, price.toFixed(2), price > ema8);
-    check("RSI(3) below 30 (snap-back setup in uptrend)", "< 30", rsi3.toFixed(2), rsi3 < 30);
+    const bullishCross = prevRsi3 < 30 && rsi3 >= 30;
+    check(
+      `RSI(3) crossed ↑30 snap-back (prev: ${prevRsi3.toFixed(1)} → cur: ${rsi3.toFixed(1)})`,
+      "prev<30 → cur≥30",
+      `${prevRsi3.toFixed(2)}→${rsi3.toFixed(2)}`,
+      bullishCross
+    );
     const distFromVWAP = Math.abs((price - vwap) / vwap) * 100;
     check("Price within 1.5% of VWAP (not overextended)", "< 1.5%", `${distFromVWAP.toFixed(2)}%`, distFromVWAP < 1.5);
 
@@ -205,7 +211,13 @@ function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
     console.log("  Bias: BEARISH — checking short entry conditions\n");
     check("Price below VWAP (sellers in control)", `< ${vwap.toFixed(2)}`, price.toFixed(2), price < vwap);
     check("Price below EMA(8) (downtrend confirmed)", `< ${ema8.toFixed(2)}`, price.toFixed(2), price < ema8);
-    check("RSI(3) above 70 (reversal setup in downtrend)", "> 70", rsi3.toFixed(2), rsi3 > 70);
+    const bearishCross = prevRsi3 > 70 && rsi3 <= 70;
+    check(
+      `RSI(3) crossed ↓70 reversal (prev: ${prevRsi3.toFixed(1)} → cur: ${rsi3.toFixed(1)})`,
+      "prev>70 → cur≤70",
+      `${prevRsi3.toFixed(2)}→${rsi3.toFixed(2)}`,
+      bearishCross
+    );
     const distFromVWAP = Math.abs((price - vwap) / vwap) * 100;
     check("Price within 1.5% of VWAP (not overextended)", "< 1.5%", `${distFromVWAP.toFixed(2)}%`, distFromVWAP < 1.5);
 
@@ -220,6 +232,12 @@ function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
 
 // ─── Trade Limits ────────────────────────────────────────────────────────────
 
+function getTradeSize(log) {
+  const executedCount = log.trades.filter((t) => t.orderPlaced).length;
+  const size = executedCount % 2 === 0 ? 3 : 4;
+  return Math.min(size, CONFIG.maxTradeSizeUSD);
+}
+
 function checkTradeLimits(log) {
   const todayCount = countTodaysTrades(log);
   console.log("\n── Trade Limits ─────────────────────────────────────────\n");
@@ -230,12 +248,8 @@ function checkTradeLimits(log) {
   }
   console.log(`✅ Trades today: ${todayCount}/${CONFIG.maxTradesPerDay} — within limit`);
 
-  const tradeSize = Math.min(CONFIG.portfolioValue * 0.01, CONFIG.maxTradeSizeUSD);
-  if (tradeSize > CONFIG.maxTradeSizeUSD) {
-    console.log(`🚫 Trade size $${tradeSize.toFixed(2)} exceeds max $${CONFIG.maxTradeSizeUSD}`);
-    return false;
-  }
-  console.log(`✅ Trade size: $${tradeSize.toFixed(2)} — within max $${CONFIG.maxTradeSizeUSD}`);
+  const tradeSize = getTradeSize(log);
+  console.log(`✅ Trade size: $${tradeSize.toFixed(2)} — alternating $3/$4 (max $${CONFIG.maxTradeSizeUSD})`);
   return true;
 }
 
@@ -422,18 +436,19 @@ async function run() {
   const ema8 = calcEMA(closes, 8);
   const vwap = calcVWAP(candles);
   const rsi3 = calcRSI(closes, 3);
+  const prevRsi3 = calcRSI(closes.slice(0, -1), 3);
 
   console.log(`  EMA(8):  $${ema8.toFixed(2)}`);
   console.log(`  VWAP:    $${vwap ? vwap.toFixed(2) : "N/A"}`);
-  console.log(`  RSI(3):  ${rsi3 ? rsi3.toFixed(2) : "N/A"}`);
+  console.log(`  RSI(3):  ${rsi3 ? rsi3.toFixed(2) : "N/A"} (prev: ${prevRsi3 ? prevRsi3.toFixed(2) : "N/A"})`);
 
-  if (!vwap || !rsi3) {
+  if (!vwap || !rsi3 || !prevRsi3) {
     console.log("\n⚠️  Not enough data to calculate indicators. Exiting.");
     return;
   }
 
-  const { results, allPass } = runSafetyCheck(price, ema8, vwap, rsi3, rules);
-  const tradeSize = Math.min(CONFIG.portfolioValue * 0.01, CONFIG.maxTradeSizeUSD);
+  const { results, allPass } = runSafetyCheck(price, ema8, vwap, rsi3, prevRsi3, rules);
+  const tradeSize = getTradeSize(log);
 
   console.log("\n── Decision ─────────────────────────────────────────────\n");
 
@@ -442,7 +457,7 @@ async function run() {
     symbol: CONFIG.symbol,
     timeframe: CONFIG.timeframe,
     price,
-    indicators: { ema8, vwap, rsi3 },
+    indicators: { ema8, vwap, rsi3, prevRsi3 },
     conditions: results,
     allPass,
     tradeSize,
